@@ -5,18 +5,18 @@ import seaborn as sns
 import pandas as pd
 import argparse
 
-from src import ModelParameters, EvolutionaryModel, plot_simulation_results
+from src import ModelParameters, EvolutionaryModel, plot_simulation_results, analyze_parameter_regime
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-k','--k_species', default=10)
-parser.add_argument('-ni','--n_individuals', description='Number of individuals per species', default=50)
-parser.add_argument('-nj','--n_substances', default=4)
-parser.add_argument('-mr','--mutation_rate', description='Poisson rate for number of mutations', default=0.05)
-parser.add_argument('-mu','--mean_mutation', description='mean of mutation effect', default=0.0)
-parser.add_argument('-std','--sigma_mutation', description='standard deviation of mutation effect', default=0.02)
-parser.add_argument('-dt','--timestep', default=1.0)
-parser.add_argument('-ns','--num_steps', default=1000)
-parser.add_argument('-se','--save_every', default=10)
+parser.add_argument('-k','--k_species', default=10, type=int)
+parser.add_argument('-ni','--n_individuals', help='Number of individuals per species', default=50, type=int)
+parser.add_argument('-nj','--n_substances', default=4, type=int)
+parser.add_argument('-mr','--mutation_rate', help='Poisson rate for number of mutations', default=0.05, type=float)
+parser.add_argument('-mu','--mean_mutation', help='mean of mutation effect', default=0.0, type=float)
+parser.add_argument('-std','--sigma_mutation', help='standard deviation of mutation effect', default=0.02, type=float)
+parser.add_argument('-dt','--timestep', default=1.0, type=float)
+parser.add_argument('-ns','--num_steps', default=1000, type=int)
+parser.add_argument('-se','--save_every', default=10, type=int)
 
 args = vars(parser.parse_args())
 
@@ -29,7 +29,7 @@ sigma = args['sigma_mutation']
 dt = args['timestep']
 num_steps = args['num_steps']
 save_every = args['save_every']
-
+print(num_steps + 1)
 
 if __name__ == "__main__":
     # Test with large number of species
