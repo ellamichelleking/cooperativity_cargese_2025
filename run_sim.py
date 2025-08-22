@@ -50,4 +50,4 @@ def run(k=10, n_k=50, rand_seed=0, n_steps=2000):
 
 if __name__ == "__main__":    
     # Run example simulation
-    analysis, params = example_simulation(k=10, n_k=50)
+    analysis, params = run(k=10, n_k=50)
