@@ -1,0 +1,238 @@
+"""
+Eco-evo model with A-producers (AP), A-cheaters (AC), species B, and toxin T.
+- Nonlinear cost for producers: c_eff(T)
+- Nonlinear sensitivity of B to toxin: s_eff(T)
+- Bidirectional mutation between producers and cheaters
+
+Requires: numpy, scipy, matplotlib
+"""
+
+import numpy as np
+from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
+
+# ----------------------------
+# Model parameters (defaults)
+# ----------------------------
+# Demography & competition
+rA, KA = 1.0, 500.0     # growth rate and carrying capacity for A
+rB, KB = 1.0, 500.0     # growth rate and carrying capacity for B
+phi, psi = 0.5, 0.5     # interspecific competition strengths
+
+# Toxin
+alpha, delta = 0.05, 0.1  # production per producer, decay rate
+
+# Mutation (producer <-> cheater)
+muPC, muCP = 0.01, 0.01    # P->C and C->P (per-birth) rates
+
+# Nonlinear functions controls (you can tune these)
+# Base scales
+c_base = 0.2              # baseline production cost scale
+s_base = 0.03             # baseline sensitivity scale
+
+# Saturation constants (Michaelis-Menten) and Hill exponents
+k_c, k_s = 25.0, 25.0     # half-saturation constants for cost and sensitivity
+h_c, h_s = 2.0, 2.0       # Hill exponents (>=1). h=1 -> Michaelis-Menten
+
+# Switches to compare linear vs nonlinear (set to False to use linear)
+NONLINEAR_COST = True
+NONLINEAR_SENS = True
+
+# ----------------------------
+# Nonlinear functions
+# ----------------------------
+def hill_saturating(x, k, h):
+    """ Standard Hill function: x^h / (k^h + x^h); returns 0 when x<=0. """
+    if x <= 0.0:
+        return 0.0
+    xh = x**h
+    return xh / (k**h + xh)
+
+def c_eff(T, c=c_base, k=k_c, h=h_c, nonlinear=NONLINEAR_COST):
+    """
+    Effective production cost for producers.
+    - Nonlinear: c * Hill(T; k_c, h_c)  (increases with T, saturates at c)
+    - Linear alt: c                     (constant)
+    """
+    if not nonlinear:
+        return c
+    return c * hill_saturating(T, k, h)
+
+def s_eff(T, s=s_base, k=k_s, h=h_s, nonlinear=NONLINEAR_SENS):
+    """
+    Effective sensitivity multiplier of B to toxin.
+    - Nonlinear: s * Hill(T; k_s, h_s)  (dose-response; saturates at s)
+    - Linear alt: s (constant)
+    """
+    if not nonlinear:
+        return s
+    return s * hill_saturating(T, k, h)
+
+# ----------------------------
+# ODE system
+# ----------------------------
+def odes(t, y,
+         rA=rA, KA=KA, rB=rB, KB=KB, phi=phi, psi=psi,
+         alpha=alpha, delta=delta, muPC=muPC, muCP=muCP,
+         c=c_base, s=s_base):
+    AP, AC, B, T = y
+    A = AP + AC
+
+    # Baseline logistic growth terms
+    gA = rA * (1.0 - (A + phi * B) / KA)   # per-capita A growth (before costs)
+    gB = rB * (1.0 - (B + psi * A) / KB)   # per-capita B growth (before toxin)
+
+    # Nonlinear cost/sensitivity
+    c_now = c_eff(T, c=c)                  # <= non-linearized producer cost
+    s_now = s_eff(T, s=s)                  # <= non-linearized sensitivity
+
+    # Per-capita growth (fitness) with modifiers
+    wP = gA - c_now                        # producers pay cost
+    wC = gA                                # cheaters don't
+    wB = gB - s_now * T                    # B harmed by toxin dose-response
+
+    # Flows
+    dAP = AP * wP * (1.0 - muPC) + AC * wC * muCP
+    dAC = AC * wC * (1.0 - muCP) + AP * wP * muPC
+    dB  = B  * wB
+    dT  = alpha * AP - delta * T
+
+    return [dAP, dAC, dB, dT]
+
+# ----------------------------
+# Utilities
+# ----------------------------
+def simulate(t_end=300, y0=(50.0, 50.0, 100.0, 0.0),
+             c=c_base, s=s_base, rtol=1e-7, atol=1e-9):
+    """ Integrate the ODE and return solution object and derived quantities. """
+    t_span = (0.0, t_end)
+    t_eval = np.linspace(*t_span, 2000)
+    sol = solve_ivp(odes, t_span, y0, t_eval=t_eval, rtol=rtol, atol=atol,
+                    args=(rA, KA, rB, KB, phi, psi, alpha, delta, muPC, muCP, c, s))
+    AP, AC, B, T = sol.y
+    A = AP + AC
+    p = AP / np.maximum(A, 1e-12)
+    return sol, AP, AC, A, B, T, p
+
+def equilibria_stats(sol, AP, AC, A, B, T, window=0.1):
+    """ Return averages over the last 'window' fraction of time points. """
+    n = len(sol.t)
+    i0 = int((1.0 - window) * n)
+    p = AP / np.maximum(A, 1e-12)
+    return {
+        "AP*": float(np.mean(AP[i0:])),
+        "AC*": float(np.mean(AC[i0:])),
+        "A*":  float(np.mean(A[i0:])),
+        "B*":  float(np.mean(B[i0:])),
+        "T*":  float(np.mean(T[i0:])),
+        "p*":  float(np.mean(p[i0:]))
+    }
+
+def is_coexistence(eq_stats, eps=1e-3, p_bounds=(1e-3, 1-1e-3)):
+    """
+    Coexistence criterion: all groups > eps and producer fraction strictly between bounds.
+    Returns True if AP*, AC*, B* > eps and p* in (p_bounds).
+    """
+    return (eq_stats["AP*"] > eps and
+            eq_stats["AC*"] > eps and
+            eq_stats["B*"]  > eps and
+            p_bounds[0] < eq_stats["p*"] < p_bounds[1])
+
+# ----------------------------
+# Time-series plotting
+# ----------------------------
+def plot_dynamics(sol, AP, AC, A, B, T, p):
+    """ Four separate plots, as required by some style guides. """
+    # Producers/Cheaters/Total A
+    plt.figure(figsize=(8,4.5))
+    plt.plot(sol.t, AP, label="A producers")
+    plt.plot(sol.t, AC, label="A cheaters")
+    plt.plot(sol.t, A,  label="A total")
+    plt.xlabel("Time"); plt.ylabel("Population")
+    plt.legend(); plt.tight_layout(); plt.show()
+
+    # Fraction producers
+    plt.figure(figsize=(8,4.5))
+    plt.plot(sol.t, p)
+    plt.xlabel("Time"); plt.ylabel("Fraction producers (p)")
+    plt.ylim(0,1)
+    plt.tight_layout(); plt.show()
+
+    # Species B
+    plt.figure(figsize=(8,4.5))
+    plt.plot(sol.t, B)
+    plt.xlabel("Time"); plt.ylabel("Species B")
+    plt.tight_layout(); plt.show()
+
+    # Toxin
+    plt.figure(figsize=(8,4.5))
+    plt.plot(sol.t, T)
+    plt.xlabel("Time"); plt.ylabel("Toxin (T)")
+    plt.tight_layout(); plt.show()
+
+# ----------------------------
+# Parameter scan for coexistence
+# ----------------------------
+def scan_coexistence(c_grid, s_grid, y0=(50,50,100,0), t_end=300):
+    """
+    Scan over (c, s) grid, return:
+      - p_star, A_star, B_star, coexist (bool) arrays of shape (len(s_grid), len(c_grid))
+    """
+    p_star = np.zeros((len(s_grid), len(c_grid)))
+    A_star = np.zeros_like(p_star)
+    B_star = np.zeros_like(p_star)
+    coexist = np.zeros_like(p_star, dtype=bool)
+
+    for i, s in enumerate(s_grid):
+        for j, c in enumerate(c_grid):
+            sol, AP, AC, A, B, T, p = simulate(t_end=t_end, y0=y0, c=c, s=s)
+            eq = equilibria_stats(sol, AP, AC, A, B, T)
+            p_star[i, j] = eq["p*"]
+            A_star[i, j] = eq["A*"]
+            B_star[i, j] = eq["B*"]
+            coexist[i, j] = is_coexistence(eq)
+    return p_star, A_star, B_star, coexist
+
+def plot_heatmap(Z, x, y, title, xlabel, ylabel):
+    """ Single heatmap plot helper. """
+    plt.figure(figsize=(7.2,5.4))
+    extent = [x[0], x[-1], y[0], y[-1]]
+    im = plt.imshow(Z, origin="lower", extent=extent, aspect="auto")
+    plt.title(title); plt.xlabel(xlabel); plt.ylabel(ylabel)
+    plt.colorbar(im)
+    plt.tight_layout(); plt.show()
+
+def plot_coexistence_mask(mask, x, y, title="Coexistence region"):
+    """ Plot boolean mask of coexistence as a binary image. """
+    plt.figure(figsize=(7.2,5.4))
+    extent = [x[0], x[-1], y[0], y[-1]]
+    plt.imshow(mask.astype(float), origin="lower", extent=extent, aspect="auto")
+    plt.title(title); plt.xlabel("Cost scale c"); plt.ylabel("Sensitivity scale s")
+    plt.tight_layout(); plt.show()
+
+# ----------------------------
+# Example usage
+# ----------------------------
+if __name__ == "__main__":
+    # ---- Example 1: time-series dynamics for one parameter pair ----
+    c_demo, s_demo = 0.20, 0.030   # try adjusting these
+    y0_demo = (50.0, 50.0, 100.0, 0.0)
+    sol, AP, AC, A, B, T, p = simulate(t_end=400, y0=y0_demo, c=c_demo, s=s_demo)
+    eq = equilibria_stats(sol, AP, AC, A, B, T)
+    print("Equilibrium (last 10% averages):", eq, "Coexistence?", is_coexistence(eq))
+
+    plot_dynamics(sol, AP, AC, A, B, T, p)
+
+    # ---- Example 2: parameter scan (coexistence map + summaries) ----
+    c_values = np.linspace(0.05, 0.35, 25)   # cost scale
+    s_values = np.linspace(0.005, 0.06, 25)  # sensitivity scale
+
+    p_star, A_star, B_star, mask = scan_coexistence(c_values, s_values, y0=y0_demo, t_end=350)
+
+    plot_heatmap(p_star, c_values, s_values, "Equilibrium fraction producers (p*)",
+                 "Cost scale c", "Sensitivity scale s")
+    plot_heatmap(B_star, c_values, s_values, "Equilibrium B (B*)",
+                 "Cost scale c", "Sensitivity scale s")
+    plot_heatmap(A_star, c_values, s_values, "Equilibrium A total (A*)",
+                 "Cost scale c", "Sensitivity scale s")
+    plot_coexistence_mask(mask, c_values, s_values, "Coexistence region (AP, AC, B all > 0)")
